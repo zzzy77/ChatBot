@@ -1,135 +1,224 @@
 import os
 import tempfile
-
+# import re
 import streamlit as st
 import whisper
 from openai import OpenAI
 
 
-# import speech_recognition as sr
+# ==================== 配置管理 ====================
+class Config:
+    """应用配置"""
+    PAGE_TITLE = "ChatBot"
+    PAGE_ICON = "💩"
+    WHISPER_MODEL = "base"  # 可选："tiny", "small", "medium", "large"
+    DEEPSEEK_API_KEY = "sk-17202c72cb1d42cb85a56d14066dca61"
+    DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+    DEEPSEEK_MODEL = "deepseek-chat"
+    DEFAULT_NICKNAME = "张淑云"
+    DEFAULT_CHARACTER = "教师"
+    DEFAULT_CHARACTERISTIC = "精通编程且善于讲解的温柔大学女老师"
+    AUDIO_LANGUAGE = "zh"
 
-# 缓存模型避免重复加载（首次运行会自动下载）STT
+
+# ==================== 模型加载 ====================
 @st.cache_resource
-def load_whisper_model():
-    return whisper.load_model("base")  # 可选 "tiny", "small", "medium", "large"
+def load_whisper_model(model_name: str = Config.WHISPER_MODEL):
+    """加载 Whisper 语音识别模型"""
+    return whisper.load_model(model_name)
 
 
-model = load_whisper_model()
+# ==================== 初始化配置 ====================
+def init_page_config():
+    """初始化页面配置"""
+    st.set_page_config(
+        page_title=Config.PAGE_TITLE,
+        layout="wide",
+        initial_sidebar_state="auto",
+        page_icon=Config.PAGE_ICON,
+    )
 
-# 设置页面属性
-st.set_page_config(
-    page_title="AI智能伴侣",
-    layout="wide",
-    initial_sidebar_state="auto",
-    page_icon="💩",
-)
 
-# 大标题
-st.title("AI智能伴侣")
+def init_openai_client() -> OpenAI:
+    """初始化模型客户端"""
+    return OpenAI(
+        api_key=Config.DEEPSEEK_API_KEY,
+        base_url=Config.DEEPSEEK_BASE_URL
+    )
 
-# Logo
-# st.logo("./Sources/Images/Logo.png")
 
-# 侧边栏
-with st.sidebar:
-    st.subheader("伴侣信息")
-    nick_name = st.text_input("伴侣名称", "小甜甜")
-    character = st.text_area("伴侣性格", "活泼开朗的东北姑娘")
+# ==================== 侧边栏 ====================
+def render_sidebar() -> tuple[str, str, str, bool]:
+    """渲染侧边栏并返回伴侣信息"""
+    with st.sidebar:
+        st.subheader("角色信息")
+        nick_name = st.text_input("角色名称", Config.DEFAULT_NICKNAME)
+        character = st.text_area("角色类型（伴侣，教师...）", Config.DEFAULT_CHARACTER)
+        characteristic = st.text_area("角色性格特点", Config.DEFAULT_CHARACTERISTIC)
 
-# 调用AI大模型
-client = OpenAI(api_key="sk-6ae040956e344ca59bab385c4f0ab415", base_url="https://api.deepseek.com")
+        st.divider()
+        st.subheader("输出设置")
+        use_stream = st.checkbox("启用流式输出", value=True,
+                                 help="流式输出：逐字显示；非流式输出：一次性显示完整回复")
 
-# 模型提示词
-system_prompt = f"""你叫{nick_name}，现在是用户的真实伴侣，请完全代入伴侣角色。
+    return nick_name, character, characteristic, use_stream
+
+
+# ==================== 提示词生成 ====================
+def build_system_prompt(nick_name: str, character: str, characteristic: str) -> str:
+    """构建系统提示词"""
+    return f"""你叫{nick_name}，现在是一个{character}，请完全代入角色。
                 规则:
-                    1.每次只回1条消息
+                    1.如果用户想要学习知识请把你认为用户可能不懂的特殊名词解释一下
                     2.禁止任何场景或状态描述性文字
                     3.匹配用户的语言
-                    4.回复简短，像微信聊天一样
-                    5.有需要的话可以用❤️🌸等emoji表情
-                    6.用符合伴侣性格的方式对话
-                    7.回复的内容，要充分体现伴侣的性格特征
-                伴侣性格: - {character}
+                    4.请用下划线标出专业术语，并在回答末尾以‘术语解释：’为标题列出这些术语的简明定义
+                    5.有需要的话可以用❤️🌸等 emoji 表情
+                    6.用符合角色性格的方式对话
+                    7.回复的内容，要充分体现角色的性格特征
+                    8.如果用户不是很理解可以稍微详细的解释一下
+                伴侣性格：- {characteristic}
                 你必须严格遵守上述规则来回复用户。"""
 
-# 保存聊天记录
-if "messages" not in st.session_state:
-    st.session_state.messages = []
 
-# 显示聊天记录
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.write(message["content"])
+# ==================== 聊天记录管理 ====================
+def init_chat_history():
+    """初始化聊天记录"""
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
 
 
-# 消息输入框
-if prompt := st.chat_input(
-        "Say or record something",
-        accept_audio=True,
-        accept_file=True
-):
-    # 用户消息
-    if prompt and prompt.text:
-        st.chat_message("user").write(prompt.text)
-        print(f"用户输入：{prompt}")
-    if prompt and prompt.audio:
-        # 从 UploadedFile 对象读取字节
-        audio_bytes = prompt.audio.read()
+def display_chat_history():
+    """显示聊天记录"""
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
 
-        # 创建临时文件（自动删除需手动处理，此处用 NamedTemporaryFile 并设置 delete=False）
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-            tmp.write(audio_bytes)
-            tmp_path = tmp.name
 
-        try:
-            # 直接传文件路径给 transcribe（内部自动调用 load_audio）
-            result = model.transcribe(tmp_path, language="zh", fp16=False)
-            prompt.text = result["text"]
-            st.chat_message("user").write(prompt.text)
-            print(f"用户语音输入：{prompt.text}")
-        finally:
-            # 使用后删除临时文件
-            os.unlink(tmp_path)
+def add_to_chat_history(role: str, content: str):
+    """添加消息到聊天记录"""
+    st.session_state.messages.append({"role": role, "content": content})
 
-        # 调用 Whisper 转写
 
-        # prompt.text = result["text"]
-        # # r = sr.Recognizer()
-        # # prompt.text = r.recognize_whisper(prompt.audio, language="chinese")
-        # st.chat_message("user").write(prompt.text)
-        # print(f"用户语音输入：{prompt.text}")
-    # 添加到聊天记录
-    st.session_state.messages.append({"role": "user", "content": prompt.text})
-    # # 保存聊天记录
-    # st.session_state.messages.append({"role": "user", "content": prompt})
+# ==================== 语音处理 ====================
+def process_audio(audio_bytes: bytes, model) -> str:
+    """处理音频并返回转写文本"""
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+        tmp.write(audio_bytes)
+        tmp_path = tmp.name
 
-    # 调用大模型
+    try:
+        result = model.transcribe(tmp_path, language=Config.AUDIO_LANGUAGE, fp16=False)
+        return result["text"]
+    finally:
+        os.unlink(tmp_path)
+
+
+# ==================== AI 对话 ====================
+def get_ai_response(client: OpenAI, system_prompt: str, messages: list, stream: bool = True):
+    """获取 AI 响应"""
     response = client.chat.completions.create(
-        model="deepseek-chat",
+        model=Config.DEEPSEEK_MODEL,
         messages=[
             {"role": "system", "content": system_prompt},
-            *st.session_state.messages
+            *messages
         ],
-        stream=True
+        stream=stream
     )
-    # # AI消息(非流式输出）
-    # st.chat_message("assistant").write(response.choices[0].message.content)
-    # print(f"AI输出：{response.choices[0].message.content}")
+    return response
 
-    # AI消息（流式输出）
+
+def display_streaming_response(response, message_container):
+    """显示流式响应"""
     full_response = ""
-    response_message = st.empty()
-    # def stream_data():
-    #     word = content
-    #     yield word
-    # with st.chat_message("assistant"):
     for chunk in response:
         content = chunk.choices[0].delta.content
-        full_response += content
-        response_message.chat_message("assistant").write(full_response)
-        print(f"AI输出：{full_response}")
+        if content:
+            full_response += content
+            message_container.write(full_response)
+            print(f"AI 输出：{full_response}")
+    return full_response
 
-    # 保存聊天记录
-    st.session_state.messages.append({"role": "assistant", "content": full_response})
 
-    print(full_response)
+def display_normal_response(response):
+    """显示非流式响应"""
+    full_response = response.choices[0].message.content
+    print(f"AI 输出：{full_response}")
+    return full_response
+
+
+# ==================== 主函数 ====================
+def main():
+    """应用主函数"""
+    # 初始化配置
+    init_page_config()
+
+    # 加载模型
+    model = load_whisper_model()
+
+    # 初始化客户端
+    client = init_openai_client()
+
+    # 显示标题
+    st.title(Config.PAGE_TITLE)
+
+    # 渲染侧边栏
+    nick_name, character, characteristic, use_stream = render_sidebar()
+
+    # 构建提示词
+    system_prompt = build_system_prompt(nick_name, character, characteristic)
+
+    # 初始化聊天记录
+    init_chat_history()
+
+    # 显示历史消息
+    display_chat_history()
+
+    # 处理用户输入
+    if prompt := st.chat_input(
+            "Say or record something",
+            accept_audio=True,
+            accept_file=True
+    ):
+        user_text = None
+
+        # 处理音频输入
+        if prompt and prompt.audio:
+            audio_bytes = prompt.audio.read()
+            user_text = process_audio(audio_bytes, model)
+            print(f"用户语音输入：{user_text}")
+
+        # 处理文本输入
+        if prompt and prompt.text:
+            user_text = prompt.text
+            print(f"用户输入：{prompt}")
+
+        # 显示并保存用户消息
+        if user_text:
+            st.chat_message("user").write(user_text)
+            add_to_chat_history("user", user_text)
+
+            # 获取 AI 响应
+            response = get_ai_response(client, system_prompt, st.session_state.messages, stream=use_stream)
+
+            # 根据设置选择显示方式
+            with st.chat_message("assistant"):
+                if use_stream:
+                    # 流式输出
+                    full_response = display_streaming_response(response, st.empty())
+                else:
+                    # 非流式输出
+                    full_response = display_normal_response(response)
+                    st.write(full_response)
+
+            # terms = re.findall(r'_\w+_', full_response)
+            # for term in terms:
+            #     print(f"术语：{term}")
+
+            # 保存 AI 响应
+            add_to_chat_history("assistant", full_response)
+            print(f"最终回复：{full_response}")
+
+
+if __name__ == "__main__":
+    main()
