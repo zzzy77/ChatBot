@@ -1,9 +1,12 @@
+import json
 import os
 import tempfile
 # import re
 import streamlit as st
 import whisper
 from openai import OpenAI
+from datetime import datetime
+import asyncio
 
 
 # ==================== 配置管理 ====================
@@ -12,7 +15,7 @@ class Config:
     PAGE_TITLE = "ChatBot"
     PAGE_ICON = "💩"
     WHISPER_MODEL = "base"  # 可选："tiny", "small", "medium", "large"
-    DEEPSEEK_API_KEY = "sk-17202c72cb1d42cb85a56d14066dca61"
+    DEEPSEEK_API_KEY = "sk-83f291ef370149b5b56719b27b4315d0"
     DEEPSEEK_BASE_URL = "https://api.deepseek.com"
     DEEPSEEK_MODEL = "deepseek-chat"
     DEFAULT_NICKNAME = "张淑云"
@@ -48,20 +51,57 @@ def init_openai_client() -> OpenAI:
 
 
 # ==================== 侧边栏 ====================
-def render_sidebar() -> tuple[str, str, str, bool]:
-    """渲染侧边栏并返回伴侣信息"""
+def render_sidebar() -> bool:
+    """渲染侧边栏并返回伴侣信息和会话管理"""
     with st.sidebar:
-        st.subheader("角色信息")
-        nick_name = st.text_input("角色名称", Config.DEFAULT_NICKNAME)
-        character = st.text_area("角色类型（伴侣，教师...）", Config.DEFAULT_CHARACTER)
-        characteristic = st.text_area("角色性格特点", Config.DEFAULT_CHARACTERISTIC)
+        st.subheader("会话管理")
+        session_management()
 
+        st.subheader("角色信息")
+        character_management()
+
+        # 分割符
         st.divider()
+
         st.subheader("输出设置")
         use_stream = st.checkbox("启用流式输出", value=True,
                                  help="流式输出：逐字显示；非流式输出：一次性显示完整回复")
 
-    return nick_name, character, characteristic, use_stream
+    return use_stream
+
+
+def session_management():
+    # 会话管理
+    if not os.path.exists("Resources/Sessions"):
+        os.makedirs("Resources/Sessions", exist_ok=True)
+    for session in os.listdir("Resources/Sessions"):
+        if session.endswith(".json") and st.button(session):
+            st.session_state.session_id = session[:-5]
+            load_current_state()#能刷新界面
+            print("加载会话"+st.session_state.session_id)
+
+    if st.button("创建新对话") and st.session_state.messages:
+        # 保存当前会话
+        save_current_session()
+        print(st.session_state.session_id+"保存成功")
+        # 初始化新会话并保存
+
+        st.session_state.messages = []
+        st.session_state.current_session = datetime.now().strftime("%Y%m%d_%H%M%S")
+        st.session_state.session_id = st.session_state.current_session
+        print("初始化新会话完成")
+        save_current_session()
+        print(st.session_state.session_id+"保存成功")
+        load_current_state()# 不能刷新界面？
+        print(f"加载新对话{st.session_state.session_id}完成")
+
+
+def character_management():
+    # 角色管理
+    st.session_state["nick_name"] = st.text_input("角色名称", Config.DEFAULT_NICKNAME)
+    st.session_state["character"] = st.text_area("角色类型（伴侣，教师...）", Config.DEFAULT_CHARACTER)
+    st.session_state.characteristic = st.text_area("角色性格特点", Config.DEFAULT_CHARACTERISTIC)
+    return
 
 
 # ==================== 提示词生成 ====================
@@ -86,6 +126,43 @@ def init_chat_history():
     """初始化聊天记录"""
     if "messages" not in st.session_state:
         st.session_state.messages = []
+    if "current_session" not in st.session_state:
+        st.session_state.current_session = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # if "nick_name" not in st.session_state:
+    #     st.session_state.nick_name = Config.DEFAULT_NICKNAME
+    # if "character" not in st.session_state:
+    #     st.session_state.character = Config.DEFAULT_CHARACTER
+    # if "characteristic" not in st.session_state:
+    #     st.session_state.characteristic = Config.DEFAULT_CHARACTERISTIC
+    # if "current_session" is not st.session_state.current_session:
+    #     st.session_state.current_session = datetime.now().strftime("%Y%m%d_%H%M%S")
+    #
+    # if "messages" is not st.session_state.messages or "messages" not in st.session_state:
+    #     st.session_state.messages = []
+    #
+    # if "nick_name" is not st.session_state.nick_name or "nick_name" not in st.session_state:
+    #     st.session_state.nick_name = Config.DEFAULT_NICKNAME
+    #
+    # if "character" not in st.session_state.character or "character" not in st.session_state:
+    #     st.session_state.character = Config.DEFAULT_CHARACTER
+    #
+    # if "characteristic" not in st.session_state.characteristic or "characteristic" not in st.session_state:
+    #     st.session_state.characteristic = Config.DEFAULT_CHARACTERISTIC
+    # if st.session_state.current_session is not datetime.now().strftime("%Y%m%d_%H%M%S"):
+    #     st.session_state.current_session = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # if st.session_state.messages is not st.session_state.get("messages", []):
+    #     st.session_state.messages = []
+    # if st.session_state.nick_name is not st.session_state.get("nick_name", Config.DEFAULT_NICKNAME):
+    #     st.session_state.nick_name = Config.DEFAULT_NICKNAME
+    # if st.session_state.character is not st.session_state.get("character", Config.DEFAULT_CHARACTER):
+    #     st.session_state.character = Config.DEFAULT_CHARACTER
+    # if st.session_state.characteristic is not st.session_state.get("characteristic", Config.DEFAULT_CHARACTERISTIC):
+    #     st.session_state.characteristic = Config.DEFAULT_CHARACTERISTIC
+
+    # st.session_state.messages = st.session_state.get("messages", [])
+    # st.session_state.nick_name = st.session_state.get("nick_name", Config.DEFAULT_NICKNAME)
+    # st.session_state.character = st.session_state.get("character", Config.DEFAULT_CHARACTER)
+    # st.session_state.characteristic = st.session_state.get("characteristic", Config.DEFAULT_CHARACTERISTIC)
 
 
 def display_chat_history():
@@ -100,9 +177,40 @@ def add_to_chat_history(role: str, content: str):
     st.session_state.messages.append({"role": role, "content": content})
 
 
+# ===================== 文件管理 ====================
+def save_current_session():
+    """保存当前会话"""
+    session_data = {"messages": st.session_state.messages,
+                    "nick_name": st.session_state.nick_name,
+                    "character": st.session_state.character,
+                    "characteristic": st.session_state.characteristic,
+                    "current_session": st.session_state.current_session
+                    }
+    if st.session_state.current_session:
+        with open(f"Resources/Sessions/{st.session_state.current_session}.json", "w", encoding="utf-8") as f:
+            json.dump(session_data, f, ensure_ascii=False)
+
+
+def load_current_state():
+    """加载当前会话"""
+    print("开始加载会话"+st.session_state.session_id)
+    if os.path.exists(f"Resources/Sessions/{st.session_state.session_id}.json"):
+        with open(f"Resources/Sessions/{st.session_state.session_id}.json", "r", encoding="utf-8") as f:
+            session_data: dict = json.load(f)
+            st.session_state.messages = session_data.get("messages", [])
+            st.session_state.nick_name = session_data.get("nick_name", Config.DEFAULT_NICKNAME)
+            st.session_state.character = session_data.get("character", Config.DEFAULT_CHARACTER)
+            st.session_state.characteristic = session_data.get("characteristic", Config.DEFAULT_CHARACTERISTIC)
+            st.session_state.current_session = session_data.get("current_session", "")
+    print("开始rerun")
+    st.rerun()
+
+
 # ==================== 语音处理 ====================
 def process_audio(audio_bytes: bytes, model) -> str:
     """处理音频并返回转写文本"""
+    if not audio_bytes:
+        return ""
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
         tmp.write(audio_bytes)
         tmp_path = tmp.name
@@ -154,7 +262,7 @@ def main():
     init_page_config()
 
     # 加载模型
-    model = load_whisper_model()
+    stt_model = load_whisper_model()
 
     # 初始化客户端
     client = init_openai_client()
@@ -163,10 +271,12 @@ def main():
     st.title(Config.PAGE_TITLE)
 
     # 渲染侧边栏
-    nick_name, character, characteristic, use_stream = render_sidebar()
+    use_stream = render_sidebar()
 
     # 构建提示词
-    system_prompt = build_system_prompt(nick_name, character, characteristic)
+    system_prompt = build_system_prompt(st.session_state.nick_name,
+                                        st.session_state.character,
+                                        st.session_state.characteristic)
 
     # 初始化聊天记录
     init_chat_history()
@@ -185,7 +295,7 @@ def main():
         # 处理音频输入
         if prompt and prompt.audio:
             audio_bytes = prompt.audio.read()
-            user_text = process_audio(audio_bytes, model)
+            user_text = process_audio(audio_bytes, stt_model)
             print(f"用户语音输入：{user_text}")
 
         # 处理文本输入
@@ -218,6 +328,9 @@ def main():
             # 保存 AI 响应
             add_to_chat_history("assistant", full_response)
             print(f"最终回复：{full_response}")
+
+            # 保存当前会话
+            save_current_session()
 
 
 if __name__ == "__main__":
